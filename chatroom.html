@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Chatroom</title>
+	<meta charset="UTF-8">
+
+	<!-- Latest compiled and minified CSS -->
+	<link rel="stylesheet" href="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css">
+
+	<!-- jQuery library -->
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.12.0/jquery.min.js"></script>
+
+	<!-- Latest compiled JavaScript -->
+	<script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/js/bootstrap.min.js"></script>
+
+	<link rel="stylesheet" href="//code.jquery.com/ui/1.11.4/themes/smoothness/jquery-ui.css">
+	<script src="//code.jquery.com/ui/1.11.4/jquery-ui.js"></script>
+
+	<!-- My stylesheet -->
+	<style>
+		.extra-margin {
+			margin:5px;
+		}
+
+		#chatlog { 
+			height:300px; 
+			max-height: 300px;
+			overflow:auto;
+			background-color: #CEF6F5;
+		}
+
+		#rooms_log {
+			height:150px; 
+			max-height: 150px;
+			overflow:auto;
+		}
+
+		#users_log {
+			height:250px; 
+			max-height: 250px;
+			overflow:auto;
+		}
+
+		#blacklist {
+			display: none;
+		}
+	</style>
+	
+	<!-- socket.io -->
+	<script src="/socket.io/socket.io.js"></script>
+
+	
+	<!-- main logic -->
+	<script type ="text/javascript">
+
+		/* Global Vars */
+		var username = "someone";
+		var user_socket_id = "";
+		var room_name = "lobby";
+
+
+		/* IOs */
+		var socketio = io.connect();
+
+		// After successfully connect to server, save socket_id locally
+		socketio.on("connected", function(data) {
+			user_socket_id = data.user_socket_id;
+			$("#username_modal").modal("show");
+			
+		});
+
+
+		// Receive msg from server, print
+		socketio.on("message_to_client",function(data) {
+			// Only print out messages in current room
+			if(room_name == data.room_name){
+				$("#chatlog").append("<span class='label label-primary'>" + 
+									 data.username +
+									 ":</span>" + "&nbsp;&nbsp;" +
+									 data.message + "<br>");
+			}
+		});
+
+		// update users_log
+		socketio.on("stc_update_users_log", function(data) {
+			// updates only if current chatroom changes
+			if(room_name == data.old_room_name  || room_name == data.new_room_name){
+				var users;
+				var admin_socket_id;
+				var room;
+				if(room_name == data.old_room_name){
+					users = data.old_users;
+					admin_socket_id = data.old_admin_socket_id;
+					room = data.old_room;				}
+				else{
+					users = data.new_users;
+					admin_socket_id = data.new_admin_socket_id;
+					room = data.new_room;
+				}
+					
+				var html2 = "<option id='#public' value='public'>Public</option>";
+				
+				
+				// if I am the admin, render buttons
+				if(admin_socket_id == user_socket_id) {
+					// render ban list
+					renderBanlist(room);
+					// rendender users_log section
+					$("#users_log").html("<div id='accordion_users'></div>");
+					for(var i in users) {
+						// if not me
+						if(i != user_socket_id){
+							$("#accordion_users").append(
+								"<h5>" + 
+									"<span class='label label-primary'>" + users[i] + "</span>" + 
+								"</h5>" +
+								"<div>" + 
+									"<button type='button' value='" + i + "' class='btn btn-warning btn-xs kick'>Kick</button>" +
+									'&nbsp;' +
+									"<button type='button' value='" + i + "' class='btn btn-danger btn-xs ban'>Ban</button>" +
+											   "</div>");
+
+
+							html2 += "<option id='#" + i + "' value='" + i + "'>" + users[i] + "</option>";
+						} else{
+							$("#accordion_users").append(
+								"<h5>" + 
+									"<span class='label label-primary'>" + users[i] + "</span>" + 
+								"</h5><div></div>");
+						}
+					}
+					// add event listener for kick
+					$(".kick").click(kick);
+					// add event listener for ban
+					$(".ban").click(ban);
+					// add event listener for accordion
+					$("#accordion_users").accordion({heightStyle: "content"});
+					$("#receiver").html(html2);
+				}
+				// I am not the admin of the chatroom 
+				else {
+					// hide blacklist
+					$("#blacklist").hide();
+
+					var html1 = "";
+					for(var j in users) {
+						html1 += "<span class='label label-primary'>" + 
+								 users[j] +
+								 "</span><br>";
+						if(j != user_socket_id){
+							html2 += "<option id='#" + j + "' value='" + j + "'>" + users[j] + "</option>";
+						}
+					}
+					$("#users_log").html(html1);
+					$("#receiver").html(html2);
+				}
+				
+			}	
+		});
+
+		// update rooms_log
+		socketio.on("stc_update_rooms_log", function(data) {
+			var rooms = data.rooms;
+
+			$("#rooms_log").html("<div id='accordion_rooms'></div>");
+			for(var i in rooms) {
+				// Can not join a room I am already in
+				if(room_name !== rooms[i].room_name){
+					$("#accordion_rooms").append(
+						"<h5>" + 
+							"<span class='label label-primary'>" + i + "</span>" + 
+						"</h5>" +
+						"<div>" + 
+							"<button type='button' value='" + i + "' class='btn btn-info btn-xs join'>Join</button>" +
+						"</div>");
+				}else{
+					$("#accordion_rooms").append(
+						"<h5>" + 
+							"<span class='label label-primary'>" + i + "</span>" + 
+						"</h5><div></div>");
+				}
+			}
+			// add event listener for join
+			$(".join").off().click(joinRoom);
+
+			// add event listener for accordion
+			$("#accordion_rooms").accordion({heightStyle: "content"});
+		});
+
+
+		// result of blacklist validation, if not passed, stay in current chatroom
+		// else passed, transfer to new chatroom
+		socketio.on("stc_validate", function(data) {
+			var join_result = data.join_result;
+			var new_room_name = data.new_room_name;
+			if(!join_result) {
+				alert("You are banned from chatroom " + new_room_name);
+			} else{
+				transfer(new_room_name);
+			}
+		});
+
+
+		// Clear chatlog, notify user his/her new chatroom
+		socketio.on("stc_change_room", function(data) {
+			$("#chatlog").html("<span class='label label-danger'>Robot</span>" + 
+							   "&nbsp;&nbsp;" +
+							   "You are in " +
+							   data.new_room_name + "<br>");
+			updateUsersLog(data.old_room_name, data.new_room_name);
+			updateRoomsLog();
+		});
+
+
+		// After creating new room, change to new room, update lists
+		socketio.on("stc_create_new_room", function(data) {
+			// leaveRoom();
+			changeRoom(data.room_name);
+		});
+
+
+		// Receiver: Receive and print out private message
+		socketio.on("stc_private_message_receiver", function(data) {
+			if(room_name == data.room_name){
+				$("#chatlog").append("<span class='label label-info'>" + 
+									 data.username +
+									 "</span>" + "&nbsp;WHISPERS TO YOU:&nbsp;&nbsp;" +
+									 data.message + "<br>");
+			}
+		});
+
+		// Sender: Receive and print out private message
+		socketio.on("stc_private_message_sender", function(data) {
+			if(room_name == data.room_name){
+				$("#chatlog").append("<span class='label label-info'>YOU</span>&nbsp;WHISPER TO " + 
+									 data.receiver_user_name + ":&nbsp;&nbsp;" +
+									 data.message + "<br>");
+			}
+		});
+
+
+		// A user disconnected, update user and room list
+		socketio.on("stc_disconnect", function(data) {
+			updateUsersLog(data.old_room_name, data.new_room_name);
+			updateRoomsLog();
+		});
+
+
+		// Refresh page, transfer from current room to lobby
+		socketio.on("stc_kick_receiver", function(data) {
+			alert("You have been kicked out of chatroom: " + room_name);
+			changeRoom("lobby");
+		});
+
+		// Alert kick successful
+		socketio.on("stc_kick_sender", function(data) {
+			var kicked_username = data.kicked_username;
+			alert( kicked_username + " has been kicked out");
+		});
+
+
+		// Refresh page, transfer from current room to lobby
+		socketio.on("stc_ban_receiver", function(data) {
+			alert("You have been banned from chatroom: " + room_name);
+			changeRoom("lobby");
+		});
+
+		// Alert ban successful
+		socketio.on("stc_ban_sender", function(data) {
+			var banned_username = data.banned_username;
+			alert( banned_username + " has been banned");
+		});
+
+
+		// Alert user ban has been lifeted
+		socketio.on("stc_unban_receiver", function(data) {
+			alert("Your ban from chatroom: " + data.room_name + "has been lifted");
+		});
+
+		// Alert admin unban successful, render dropdown ban list
+		socketio.on("stc_unban_sender", function(data) {
+			alert("You have successfully lifeted ban on user: " + data.unbanned_username);
+			renderBanlist(data.room);
+		});
+
+
+		// decide type of room to join
+		socketio.on("stc_query_room_type", function(data) {
+			var new_room_name = data.new_room_name;
+			var type = data.type;
+			if(type == "public") {
+				changeRoom(new_room_name);
+			}else{
+				$("#dialog").attr("title",new_room_name);
+				$("#dialog").dialog("open");
+			}
+		});
+
+
+		// decide password validation result
+		socketio.on("stc_validate_password", function(data){
+			var result = data.result;
+			var new_room_name = data.new_room_name;
+			if(result === true){
+				changeRoom(new_room_name);
+			}else{
+				alert("Password does not match");
+			}
+		});
+
+
+
+
+		/* functions */
+
+		// send msg to server
+		function sendMessage(){
+			var msg = $("#message").val();
+			var receiver_socket_id = $("#receiver").val();
+			if(receiver_socket_id == "public"){
+				socketio.emit("message_to_server", {message:msg,
+												username:username,
+												user_socket_id:user_socket_id,
+	 									        room_name:room_name});
+			} else {
+				socketio.emit("cts_private_message",{message:msg,
+												 username:username,
+												 user_socket_id:user_socket_id,
+												 receiver_socket_id:receiver_socket_id,
+	 									         room_name:room_name});
+			}
+			
+			$("#message").val("");
+      	}
+
+      	// Request for users in current chat room
+      	function updateUsersLog(old_room_name, new_room_name){
+      		socketio.emit("cts_update_users_log", {old_room_name:old_room_name,
+      											   new_room_name:new_room_name});
+      	}
+
+      	// Request for chatrooms
+      	function updateRoomsLog() {
+      		socketio.emit("cts_update_rooms_log", {});
+      	}
+
+      	// Check if user is on blacklist
+      	function validate(new_room_name) {
+      		socketio.emit("cts_validate", {new_room_name:new_room_name,
+      									   username:username,
+      									   user_socket_id:user_socket_id});
+      	}
+
+      	// transfer to the new chatroom
+      	function transfer(new_room_name){
+      		socketio.emit("cts_change_room", {old_room_name:room_name,
+      										  new_room_name:new_room_name,
+      										  username:username,
+      										  user_socket_id:user_socket_id});
+      		room_name = new_room_name;
+      	}
+
+      	// Change chatroom
+      	// validate first, then change
+      	function changeRoom(new_room_name) {
+      		validate(new_room_name);
+      	}
+
+      	// Callback func when user chooses a new username
+      	function setUsername() {
+      		username = $("#username").val();
+      		$("#username").val("");
+      		$("#username_modal").modal('hide');
+
+      		changeRoom("lobby");
+      	}
+
+      	// Callback func when user creates new chatroom
+      	function createNewRoom() {
+      		var new_room_name = $("#new_room_name").val();
+       		var type = $("#type").val();
+       		var password = $("#password").val();
+       		socketio.emit("cts_create_new_room", {new_room_name:new_room_name,
+      										  	  admin_socket_id:user_socket_id,
+      										  	  username: username,
+      										  	  type:type,
+      										  	  password:password});
+       		$("#new_room_name").val("");
+       		$("#type").val("");
+       		$("#password").val("");
+       		$("#chatroom_modal").modal('hide');
+      	}
+
+
+      	// query the room type
+      	function queryRoomType(new_room_name) {
+      		socketio.emit("cts_query_room_type", {new_room_name: new_room_name});
+      	}
+
+
+      	//Callback func when user joins a chatroom
+      	function joinRoom(){
+      		var new_room_name = $(this).val();
+      		queryRoomType(new_room_name);
+      	}
+
+      	// validate private room password
+      	function validatePassword(){
+      		var private_pwd = $("#private_pwd").val();
+      		var new_room_name = $("#dialog").attr("title");
+      		socketio.emit("cts_validate_password", {private_pwd:private_pwd,
+      												new_room_name:new_room_name});
+      		$("#private_pwd").val("");
+      		$("#dialog").attr("title","");
+      		$("#dialog").dialog("close");
+      	}
+
+      	// Callback func when admin kicks a user
+      	function kick(){
+      		var kicked_user_socket_id = $(this).val();
+      		socketio.emit("cts_kick", {kicked_user_socket_id: kicked_user_socket_id,
+      								   room_name: room_name});
+      	}
+
+      	// Callback func when admin bans a user
+      	function ban(){
+      		var banned_user_socket_id = $(this).val();
+      		socketio.emit("cts_ban", {banned_user_socket_id: banned_user_socket_id,
+      								  room_name: room_name});
+      	}
+
+      	// Callback fun when admin unbans a user
+      	function unban(){
+      		var unbanned_user_socket_id = $(this).attr("id");
+      		socketio.emit("cts_unban", {unbanned_user_socket_id: unbanned_user_socket_id,
+      								    room_name: room_name});
+      	}
+
+      	// helper func, update dropdown ban list
+      	function renderBanlist(room){
+      		$("#blacklist").children(".dropdown-menu").html("");
+				for(var k in room.blacklist){
+					$("#blacklist").children(".dropdown-menu").append(
+						"<li><a class='banned_user' id='" + k +"' href='#'>" + room.blacklist[k] + "</a></li>");
+				}
+				$("#blacklist").show();
+				$(".banned_user").off().click(unban);				
+
+      	}
+
+
+      	/* Event listeners */
+
+      	$(document).ready(function(){
+	      	// hide password section when public room is created
+	      	$("#type").change(function(){
+	      		var option = $("#type option:selected").val();
+	      		if(option == "public")
+	      			$("#pwd").hide();
+	      		else
+	      			$("#pwd").show();
+	      	});
+
+	      	// hide chatroom password dialog initially
+	      	$("#dialog").dialog({autoOpen: false});
+	      	// Add callback func for join_private_btn in dialogue
+	      	$("#join_private_btn").click(validatePassword);
+      	});
+
+
+    </script>
+</head>
+
+<body>
+	<div class="container">
+		<!-- headers -->
+		<div class="page-header">	
+			<h2>Chatroom</h2>
+			<p>Powevered by Node.js</p>
+			<div class="pull-right form-inline">
+				<button class='btn btn-info' data-toggle='modal' data-target='#chatroom_modal' id="create_new_room">Create New Chatroom</button>
+			</div>
+		</div>
+		
+		
+
+
+		<!-- Main Body -->
+		<div class="row">
+
+			
+			<div class="col-md-9">
+				<div class="row">
+					<!-- Messages Pool Area -->
+					<div class="well extra-margin" id="chatlog"></div>
+				</div>
+
+				<!-- Input Text Area -->
+				<div class="row">
+					<form role="form">
+						<div class="form-group extra-margin">
+							<label for="message">Message:</label>
+							<textarea  id="message" class="form-control" rows="4" placeholder="Type message here"></textarea>
+						</div>
+					</form>
+
+					<form role="form">
+						<div class="form-group extra-margin">
+							<label for="receiver">Send Message To:</label>
+							<select name="receiver" id="receiver" class="form-control">
+							</select>
+						</div>
+					</form>
+
+					<button class="btn btn-info pull-right extra-margin" onclick="sendMessage()">Send</button>
+					
+					<!-- Blacklist (Banned User List) -->
+					<div class="dropdown pull-right extra-margin" id="blacklist">
+						<button class="btn btn-primary dropdown-toggle" type="button" data-toggle="dropdown">Unban Users
+					  	<span class="caret"></span></button>
+					  	<ul class="dropdown-menu">
+						    
+					  	</ul>
+					</div>
+					
+				</div>
+			</div>
+			
+			<!-- chatroom and user lists -->
+			<div class="col-md-3">
+				<div class="row extra-margin">
+					<!-- Chatrooms Pool Area -->
+					<h5>Chatrooms</h5>
+					<div class="well" id="rooms_log"></div>
+				</div>
+				<div class="row extra-margin">
+					<!-- Users Pool Area -->
+					<h5>Users in current room</h5>
+					<div class="well" id="users_log"></div>
+				</div>
+			</div>
+			
+			
+		</div>
+
+		
+	</div>
+
+
+	<!-- Chatroom Password Dialog-->
+	<div id="dialog" title="">
+		<div>
+			<label for="private_pwd">Chatroom Password</label>
+			<input type="password" name="private_pwd" id="private_pwd"  class="form-control" placeholder="Password">
+			<br>
+		</div>
+
+		<button type="button" class="btn btn-info" id="join_private_btn">Enter Private Room</button>
+	</div>
+
+
+	<!-- Username Modal -->
+	<div class="modal fade" id="username_modal" role="dialog">
+		<div class="modal-dialog modal-sm">
+
+		  <!-- Modal content-->
+		  <div class="modal-content">
+		    <div class="modal-header">
+		      <h4 class="modal-title">Choose a username</h4>
+		    </div>
+		    <div class="modal-body">
+				<label for="username">Username</label>
+				<input type="text" name="username" id="username"  class="form-control" placeholder="Username">
+				<br>
+
+				<button type="button" class="btn btn-info" id="save" onclick="setUsername()">Save</button>
+
+		    </div>
+		  </div>
+		  
+		</div>
+	</div>
+
+	<!-- Create New Chatroom Modal -->
+	<div class="modal fade" id="chatroom_modal" role="dialog">
+		<div class="modal-dialog modal-sm">
+
+		  <!-- Modal content-->
+		  <div class="modal-content">
+		    <div class="modal-header">
+		      <button type="button" class="close" data-dismiss="modal">&times;</button>
+		      <h4 class="modal-title">Create New Chatroom</h4>
+		    </div>
+		    <div class="modal-body">
+				<label for="new_room_name">Chatroom Name</label>
+				<input type="text" name="new_room_name" id="new_room_name"  class="form-control" placeholder="Chatroom Name">
+				<br>
+
+				<label for="type">Chatroom Type</label>
+				<select name="type" id="type" class="form-control">
+					<option value="private">Private</option>
+					<option value="public">Public</option>
+				</select>
+				<br>
+				
+				<div id="pwd">
+				<label for="password">Chatroom Password</label>
+				<input type="password" name="password" id="password"  class="form-control" placeholder="Password">
+				<br>
+				</div>
+
+				<button type="button" class="btn btn-info" id="create" onclick="createNewRoom()">Create</button>
+
+		    </div>
+		    <div class="modal-footer">
+		      <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+		    </div>
+		  </div>
+		  
+		</div>
+	</div>
+
+</body>
+</html>
