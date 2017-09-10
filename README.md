@@ -1,11 +1,11 @@
 # chatroom
 
-* Technology:
-	Node.js
-	Socket.io
-	JavaScript
-	Bootstrap
-	AWS
+* Technologies:
+	1. Node.js
+	2. Socket.io
+	3. JavaScript
+	4. Bootstrap
+	5. AWS
 
 * Features:
 	1. sending/broadcasting private/public messages
